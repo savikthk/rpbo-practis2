@@ -28,11 +28,14 @@
 #include <QGroupBox>
 #include <QSystemTrayIcon>
 #include <QMenu>
+#include <QMenuBar>
+#include <QAction>
 #include <QTimer>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QEvent>
 #include <QIcon>
+#include <QStyle>
 
 // RPC
 #include "rbpo_rpc_h.h"
@@ -833,14 +836,42 @@ static void DoGetMonitorResults()
 // ---------------------------------------------------------------------------
 // Entry point (Qt6::EntryPoint bridges WinMain → main)
 // ---------------------------------------------------------------------------
+/* Shared shutdown routine: stop service via RPC + release resources + quit. */
+static void RequestServiceStopAndQuit()
+{
+    StopServiceViaRpc();
+    UnbindRpc();
+    if (g_hMutex) {
+        ReleaseMutex(g_hMutex);
+        CloseHandle(g_hMutex);
+        g_hMutex = nullptr;
+    }
+    QApplication::quit();
+}
+
 int main(int argc, char* argv[])
 {
-    Log("=== rbpo-app started (PID=%u) ===", GetCurrentProcessId());
+    Log("=== rbpo-app started (PID=%u, PPID parent=service:%d) ===",
+        GetCurrentProcessId(), IsParentService() ? 1 : 0);
 
-    if (!IsServiceRunning()) StartServiceAndWait();
+    /* Task 2 GUI #1: if service is not running, start it, wait for RUNNING, exit.
+     * The service then spawns the GUI in each user session itself. */
+    if (!IsServiceRunning()) {
+        Log("Service not running; starting it and exiting (Task 2 GUI #1).");
+        StartServiceAndWait();
+        return 0;
+    }
+
+    /* Task 2 GUI #2: the only legitimate parent of a running GUI instance is the
+     * service. If launched manually while service is up, just exit. */
+    if (!IsParentService()) {
+        Log("Parent process is not RBPOService; exiting (Task 2 GUI #2).");
+        return 0;
+    }
 
     g_hMutex = CreateMutexW(nullptr, TRUE, APP_MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        Log("Another instance is already running; exiting (single-instance).");
         if (g_hMutex) CloseHandle(g_hMutex);
         return 0;
     }
@@ -851,7 +882,9 @@ int main(int argc, char* argv[])
     app.setStyle("Fusion");
     app.setQuitOnLastWindowClosed(false);
 
-    QIcon appIcon(":/logo.ico");
+    /* Prefer PNG (multi-resolution, with alpha); fall back to the legacy .ico. */
+    QIcon appIcon(":/logo.png");
+    if (appIcon.isNull()) appIcon = QIcon(":/logo.ico");
     if (appIcon.isNull())
         appIcon = app.style()->standardIcon(QStyle::SP_ComputerIcon);
     app.setWindowIcon(appIcon);
@@ -869,31 +902,45 @@ int main(int argc, char* argv[])
     g_stack->addWidget(BuildActivatePage()); // index 1
     g_stack->addWidget(BuildLicensedPage()); // index 2
 
+    /* Task 1 #9 + Task 2 GUI #3: menu bar with "Файл → Выход" that stops the service. */
+    QMenuBar* menuBar = g_mainWnd->menuBar();
+    QMenu* fileMenu = menuBar->addMenu("&Файл");
+    QAction* exitAction = fileMenu->addAction("&Выход");
+    QObject::connect(exitAction, &QAction::triggered, []{
+        Log("Menu File->Exit triggered");
+        RequestServiceStopAndQuit();
+    });
+
     g_mainWnd->installEventFilter(new HideOnClose());
 
     // Tray icon
+    Log("Building tray icon...");
     g_tray = new QSystemTrayIcon(appIcon, &app);
     g_tray->setToolTip("РБПО Антивирус");
+    Log("Tray icon available: %d, isSystemTrayAvailable=%d",
+        (int)g_tray->isVisible(),
+        (int)QSystemTrayIcon::isSystemTrayAvailable());
     QMenu* trayMenu = new QMenu();
     trayMenu->addAction("Открыть", []{
+        Log("Tray menu Open triggered");
         g_mainWnd->show(); g_mainWnd->raise(); g_mainWnd->activateWindow(); RefreshUI();
     });
     trayMenu->addSeparator();
+    /* Task 2 GUI #4: tray "Выход" stops the service. */
     trayMenu->addAction("Выход", []{
-        StopServiceViaRpc();
-        UnbindRpc();
-        ReleaseMutex(g_hMutex);
-        CloseHandle(g_hMutex);
-        QApplication::quit();
+        Log("Tray menu Exit triggered");
+        RequestServiceStopAndQuit();
     });
     g_tray->setContextMenu(trayMenu);
     QObject::connect(g_tray, &QSystemTrayIcon::activated,
         [](QSystemTrayIcon::ActivationReason r){
-            if (r == QSystemTrayIcon::Trigger) {
+            Log("Tray activated, reason=%d", (int)r);
+            if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick) {
                 g_mainWnd->show(); g_mainWnd->raise(); g_mainWnd->activateWindow(); RefreshUI();
             }
         });
     g_tray->show();
+    Log("Tray icon shown");
 
     // Poll timer — refreshes visible window every 5 s
     QTimer* pollTimer = new QTimer(&app);
