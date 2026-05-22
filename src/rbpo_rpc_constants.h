@@ -13,7 +13,7 @@
 /* Spring на Mac, доступен с Windows-клиента через ZeroTier-сеть. */
 #define RBPO_BACKEND_HOST_DEFAULT  L"10.88.216.221"
 #define RBPO_BACKEND_PORT_DEFAULT    8081
-/* Как у товарища — HTTPS; для rbpo_backend без SSL: RBPO_BACKEND_USE_TLS=0 (по умолчанию). */
+/* HTTPS при RBPO_BACKEND_USE_TLS=1; для rbpo_backend без SSL — 0 (по умолчанию). */
 #define RBPO_BACKEND_USE_TLS_DEFAULT 0
 
 /* Совпадает с jwt.* когда в теле login/refresh нет expiresIn — только accessToken/refreshToken. */

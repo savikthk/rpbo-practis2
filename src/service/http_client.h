@@ -9,7 +9,7 @@ struct HttpResponse {
     bool transportError = false;
 };
 
-/* POST/GET JSON через WinHTTP. TLS при RBPO_BACKEND_USE_TLS=1 (как у товарища); иначе HTTP. */
+/* POST/GET JSON через WinHTTP. TLS при RBPO_BACKEND_USE_TLS=1; иначе HTTP. */
 HttpResponse HttpsRequest(const std::wstring& host, int port,
                           const std::wstring& method,
                           const std::wstring& path,

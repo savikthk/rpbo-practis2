@@ -298,8 +298,11 @@ static void LaunchAppInSession(DWORD sessionId)
     }
 
     HANDLE hDupToken = nullptr;
+    /* SecurityImpersonation is required so the child process can interact with
+     * the user's desktop (tray-icon clicks, WM_COMMAND dispatch). The previous
+     * SecurityIdentification level prevented UIPI from routing input messages. */
     if (!DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, nullptr,
-                          SecurityIdentification, TokenPrimary, &hDupToken)) {
+                          SecurityImpersonation, TokenPrimary, &hDupToken)) {
         RBPOLog("  DuplicateTokenEx failed, error=%u", GetLastError());
         CloseHandle(hToken);
         return;
@@ -314,8 +317,11 @@ static void LaunchAppInSession(DWORD sessionId)
 
     STARTUPINFOW si = { sizeof(si) };
     si.lpDesktop   = const_cast<LPWSTR>(L"winsta0\\default");
-    si.dwFlags     = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
+    /* Do NOT pass STARTF_USESHOWWINDOW + SW_HIDE here: that value becomes the
+     * default for the process's FIRST ShowWindow() call, which Qt invokes
+     * with SW_SHOWDEFAULT — causing later show() requests from the tray
+     * handlers to keep the window hidden. The GUI stays hidden via the
+     * --silent argument (it simply skips show() on startup). */
 
     PROCESS_INFORMATION pi = {};
 

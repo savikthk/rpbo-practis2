@@ -269,7 +269,7 @@ static int CallRefresh(const std::string& refreshToken,
 }
 
 static void CallLogoutBackend(const std::string&) {
-    /* В rbpo_backend нет POST /api/auth/logout — как у товарище с токен-ревокацией несовместимо. */
+    /* В rbpo_backend нет POST /api/auth/logout — серверная ревокация токенов не предусмотрена. */
 }
 
 static int CallMe(const std::string& accessToken,
@@ -309,11 +309,27 @@ static bool ParseSignedTicket(const std::string& body,
         else if (body[i] == '}') { depth--; if (depth == 0) { i++; break; } }
     }
     std::string ticket = body.substr(braceStart, i - braceStart);
+    RBPOLog("ParseSignedTicket: ticket=%.300s", ticket.c_str());
     expIsoOut    = JsonExtractString(ticket, "expiryDate");
     if (expIsoOut.empty())
         expIsoOut = JsonExtractString(ticket, "expirationDate");
     blockedOut   = JsonExtractBool(ticket, "blocked", false);
+    /* Backend may serialize productId as number or string, or omit it. */
     productIdOut = JsonExtractString(ticket, "productId");
+    if (productIdOut.empty()) {
+        long long pidNum = JsonExtractNumber(ticket, "productId");
+        if (pidNum > 0) productIdOut = std::to_string(pidNum);
+    }
+    /* Also try the FULL body (productId may be at top level, not inside ticket). */
+    if (productIdOut.empty()) {
+        productIdOut = JsonExtractString(body, "productId");
+    }
+    if (productIdOut.empty()) {
+        long long pidNum = JsonExtractNumber(body, "productId");
+        if (pidNum > 0) productIdOut = std::to_string(pidNum);
+    }
+    RBPOLog("ParseSignedTicket: exp=%s blocked=%d pid=%s",
+            expIsoOut.c_str(), (int)blockedOut, productIdOut.c_str());
     return !expIsoOut.empty();
 }
 
@@ -334,9 +350,10 @@ static int CallCheckLicense(const std::string& accessToken,
     }
     std::string body = "{\"deviceMac\":\"" + JsonEscape(mac) +
                        "\",\"productId\":" + pid + "}";
+    RBPOLog("CheckLicense: pid=%s mac=%s", pid.c_str(), mac.c_str());
     auto resp = HttpsRequest(host, port, L"POST", L"/api/licenses/check", body, accessToken);
     httpStatusOut = resp.status;
-    RBPOLog("CheckLicense HTTP %d body=%.200s", resp.status, resp.body.c_str());
+    RBPOLog("CheckLicense HTTP %d body=%.300s", resp.status, resp.body.c_str());
     if (resp.transportError) return RBPO_ERR_NETWORK;
     if (resp.status == 404)  return RBPO_ERR_NO_LICENSE;
     if (resp.status == 403)  { blockedOut = true; return RBPO_ERR_NO_LICENSE; }
@@ -373,17 +390,34 @@ static int CallActivate(const std::string& accessToken, const std::string& key,
         errOut = m.empty() ? ("Activation failed (HTTP " + std::to_string(resp.status) + ")") : m;
         return RBPO_ERR_BACKEND;
     }
+    RBPOLog("Activate resp HTTP %d body=%.400s", resp.status, resp.body.c_str());
     /* Per spec: if activation does not return ticket, fall back to /check. */
     std::string newProductId;
     if (!ParseSignedTicket(resp.body, expIsoOut, blockedOut, newProductId)) {
+        RBPOLog("Activate: ParseSignedTicket failed, falling back to /check");
+        /* Ensure productId is set before /check, otherwise /check skips. */
+        {
+            std::lock_guard<std::mutex> lk(g_mtx);
+            if (g_productId.empty()) {
+                g_productId = "1";
+                SaveProductIdToRegistry("1");
+                RBPOLog("Activate: default productId=1 before /check fallback");
+            }
+        }
         int httpStatus = 0;
         return CallCheckLicense(accessToken, expIsoOut, blockedOut, httpStatus);
     }
-    if (!newProductId.empty()) {
+    /* If backend didn't return productId at all, default to "1". */
+    if (newProductId.empty()) {
+        RBPOLog("Activate: productId not in response, defaulting to 1");
+        newProductId = "1";
+    }
+    {
         std::lock_guard<std::mutex> lk(g_mtx);
         if (g_productId != newProductId) {
             g_productId = newProductId;
             SaveProductIdToRegistry(newProductId);
+            RBPOLog("Activate: productId set to %s", newProductId.c_str());
         }
     }
     return RBPO_OK;
