@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <?define ProductName = "RBPO Antivirus" ?>
+  <?define Manufacturer = "RBPO" ?>
+  <?define Version = "1.0.0.0" ?>
+
+  <Product Id="A1B2C3D4-E5F6-7890-1234-567890ABCDEF" Name="$(var.ProductName)" Language="1049" Version="$(var.Version)" Manufacturer="$(var.Manufacturer)" UpgradeCode="B5A1C8F2-3E4D-4A5B-9C7D-8E0F1A2B3C4D">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <Media Id="1" Cabinet="product.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="RBPO" />
+      </Directory>
+    </Directory>
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="installer\license.rtf" />
+
+    <!-- Launch GUI after MSI install completes -->
+    <Property Id="WixShellExecTarget" Value="[#RBPOAppExeFile]" />
+    <CustomAction Id="LaunchApp" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" Execute="commit" Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="LaunchApp" After="InstallFinalize">NOT Installed</Custom>
+    </InstallExecuteSequence>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component Id="RBPOAppExe" Guid="39D16D67-9969-4793-A887-FCE2BC8E8FAC">
+        <File Id="RBPOAppExeFile" Name="rbpo-app.exe" Source="$(var.SourceDir)\rbpo-app.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="RBPOServiceExe" Guid="007ADAA1-33D5-4DC4-8BDB-4BBEDB80403B">
+        <File Id="RBPOServiceExeFile" Name="rbpo-service.exe" Source="$(var.SourceDir)\rbpo-service.exe" KeyPath="yes" />
+        <ServiceInstall Id="RBPOServiceInstall" Name="RBPOService" DisplayName="RBPO Service"
+                        Type="ownProcess" Start="auto" ErrorControl="normal"
+                        Account="NT AUTHORITY\SYSTEM" />
+        <ServiceControl Id="RBPOServiceControl" Name="RBPOService"
+                        Start="none" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="ProductFeature" Title="RBPO Antivirus" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentGroupRef Id="QtDeployFiles" />
+      <MergeRef Id="VCRedist" />
+    </Feature>
+
+    <DirectoryRef Id="TARGETDIR">
+      <Merge Id="VCRedist" SourceFile="$(var.VCRedistPath)" DiskId="1" Language="0" />
+    </DirectoryRef>
+  </Product>
+</Wix>

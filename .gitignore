@@ -1,0 +1,14 @@
+build/
+out/
+.idea/
+.vs/
+.vscode/
+.claude/
+*.user
+CMakeUserPresets.json
+CMakeSettings.json
+src/logo.ico
+logo.svg
+*.wixobj
+*.msi
+*.wixpdb

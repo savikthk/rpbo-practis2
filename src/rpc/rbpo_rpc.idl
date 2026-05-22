@@ -1,0 +1,73 @@
+[
+    uuid(A1B2C3D4-E5F6-7890-ABCD-EF1234567890),
+    version(1.0)
+]
+interface RBPOServiceRpc
+{
+    /* --- service control --- */
+    void RBPOService_Stop();
+
+    /* --- current authenticated user ---
+     * authenticated = 1 if logged in, 0 otherwise
+     * email, name allocated via midl_user_allocate; caller frees with midl_user_free
+     */
+    long RBPO_GetCurrentUser([out] long* authenticated,
+                             [out, string] wchar_t** email,
+                             [out, string] wchar_t** name);
+
+    /* --- login (sync; performs HTTPS to backend) ---
+     * returns 0 on success; non-zero with errorMessage on failure
+     */
+    long RBPO_Login([in, string] const wchar_t* email,
+                    [in, string] const wchar_t* password,
+                    [out, string] wchar_t** errorMessage);
+
+    /* --- logout (revokes refresh token at backend, drops tokens + ticket) --- */
+    long RBPO_Logout();
+
+    /* --- license status ---
+     * hasLicense = 1 if ticket is held, 0 otherwise
+     * expirationIso = "YYYY-MM-DDTHH:MM" (empty if no ticket)
+     * blocked = 1/0
+     * secondsLeft = signed seconds until expiration
+     */
+    long RBPO_GetLicenseStatus([out] long* hasLicense,
+                               [out, string] wchar_t** expirationIso,
+                               [out] long* blocked,
+                               [out] hyper* secondsLeft);
+
+    /* --- activate product --- */
+    long RBPO_ActivateProduct([in, string] const wchar_t* activationKey,
+                              [out, string] wchar_t** errorMessage);
+
+    /* --- AV stub (license-gated) ---
+     * returns 0 on success; non-zero ERROR_NO_LICENSE if ticket missing
+     */
+    long RBPO_AVPing([out, string] wchar_t** message);
+
+    long RBPO_GetAvDbInfo([out, string] wchar_t** releaseDate,
+                          [out] long* recordCount);
+
+    long RBPO_ScanFile([in, string] const wchar_t* filePath,
+                       [out] long* detected,
+                       [out, string] wchar_t** threatName);
+
+    long RBPO_ScanDirectory([in, string] const wchar_t* dirPath,
+                            [out, string] wchar_t** results);
+
+    long RBPO_ScanAllDrives([out, string] wchar_t** results);
+
+    long RBPO_SetScanSchedule([in, string] const wchar_t* path,
+                               [in] long intervalSeconds);
+
+    long RBPO_ClearScanSchedule();
+
+    long RBPO_GetScheduleResults([out, string] wchar_t** results,
+                                  [out] hyper* lastScanTimeUnix);
+
+    long RBPO_AddMonitorDirectory([in, string] const wchar_t* path);
+
+    long RBPO_RemoveMonitorDirectory([in, string] const wchar_t* path);
+
+    long RBPO_GetMonitorResults([out, string] wchar_t** results);
+}
