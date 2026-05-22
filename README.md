@@ -1,244 +1,267 @@
-# РБПО — Windows-клиент (трей и служба)
+# RBPO — Windows Tray Application + Service
 
-Учебный репозиторий с **ветками по заданиям**: от базового трей-приложения до связки со службой, локальным RPC (ALPC), HTTPS к REST API, антивирусным движком и бинарным хранилищем AV-баз.
+This repository contains the **client side** of a Windows antivirus solution built as a university project.
+The architecture consists of two executables: a system-tray GUI (`rbpo-app.exe`) and a background Windows service (`rbpo-service.exe`) that communicate through local RPC (ALPC).
 
-Это **клиентская** часть стека. Сервер REST/JWT и лицензий — Java‑проект **`rbpo_backend`** (Spring Boot).
+The service also talks to a remote **Spring Boot backend** (`rbpo_backend`) over HTTPS for authentication, license management, and signature updates.
 
-```text
-rbpo-front      ← этот репозиторий (служба + GUI)
-rbpo_backend    ← бэкенд API (Spring Boot)
+```
+rbpo-front     ← you are here (client)
+rbpo_backend   ← Java / Spring Boot server
 ```
 
 ---
 
-## Ветки и содержание
+## Branches (incremental tasks)
 
-| Ветка | Что внутри |
-| ----- | ----------- |
-| **main** | Актуальный код после слияния zad-1 … zad-5. |
-| **zad-1** | ✅ `rbpo-app.exe`: трей, иконка (PNG), меню, single-instance, QMenuBar «Файл → Выход». |
-| **zad-2** | ✅ `rbpo-service.exe`: запуск GUI в пользовательских сессиях, RPC по `ncalrpc` (ALPC), скрипт установки. |
-| **zad-3** | ✅ Auth/license: JWT в памяти службы, HTTPS к `rbpo_backend`, GUI логина и активации, фоновая проверка лицензии. |
-| **zad-4** | ✅ Антивирусный движок: сканирование файлов/директорий/дисков, расписание, мониторинг, Ахо-Корасик. |
-| **zad-5** | ✅ Бинарный формат AV-баз на диске, HMAC-манифест, резервное копирование, обновление с бэкенда. |
+Each branch adds a new layer on top of the previous one.
 
----
-
-## Ключевые файлы
-
-| Файл | Назначение |
-| ---- | ---------- |
-| `src/service/service_main.cpp` | Точка входа службы, все RPC-реализации |
-| `src/service/state.cpp` | Auth/license workers, JWT-обновление |
-| `src/service/av_engine.h/cpp` | Антивирусный движок (zad-4) |
-| `src/service/av_db_io.h/cpp` | Бинарный формат AV-баз на диске (zad-5) |
-| `src/rpc/rbpo_rpc.idl` | IDL-интерфейс (MIDL → `rpc_gen/`) |
-| `src/main.cpp` | GUI (трей-приложение) |
-| `src/rbpo_rpc_constants.h` | Имена службы, endpoint, коды ошибок |
-| `.github/workflows/build.yml` | CI-сборка exe |
-
-Имя службы: **`RBPOService`**. RPC transport: `ncalrpc`, endpoint `RBPOServiceEndpoint`.
+| Branch | What it covers |
+|--------|---------------|
+| `main`   | Current working state (tasks 1-5 merged). |
+| `zad-1`  | Qt6 tray app: PNG icon, system tray, context menu, `QMenuBar` File→Exit, single-instance via named mutex. |
+| `zad-2`  | Windows service: launch GUI into every user session, `CreateProcessAsUserW` with `SecurityImpersonation`, RPC `ncalrpc` endpoint for remote stop, PowerShell install script. |
+| `zad-3`  | Auth & licensing: JWT tokens kept **only in memory**, HTTPS POSTs to backend, GUI login/activation forms, background license worker polling every 5s. |
+| `zad-4`  | Antivirus engine: file / directory / drive scanning, Aho-Corasick automaton, scheduled scans, directory monitoring via `ReadDirectoryChangesW`, all RPC calls guarded by `LicenseGate()`. |
+| `zad-5`  | Binary storage: custom `RBDB v1` format on disk, HMAC-SHA256 manifest (`RBMF v1`), automatic backup before updates, periodic refresh from `GET /api/signatures`. |
 
 ---
 
-## Антивирусный движок (zad-4)
+## Project layout
 
-### Структура AV-базы в оперативной памяти
+- `src/main.cpp` — Qt6 GUI (tray icon, login form, activation screen, AV dashboard).
+- `src/service/service_main.cpp` — Service entry point (`ServiceMain`), RPC server loop, session enumeration, GUI spawning.
+- `src/service/state.cpp` — Token & license workers: login, refresh, activate, check-license loop.
+- `src/service/http_client.h/cpp` — WinHTTP wrapper for HTTPS REST calls.
+- `src/service/av_engine.h/cpp` — Core scanner, Aho-Corasick tree, `ScanFile`, `ScanDirectory`, `ScanAllDrives`.
+- `src/service/av_db_io.h/cpp` — Binary serialization (`avdb.bin`), manifest signing / verification, backup/restore.
+- `src/rpc/rbpo_rpc.idl` — MIDL interface definition (compiled into `rpc_gen/`).
+- `src/rbpo_rpc_constants.h` — Service name (`RBPOService`), endpoint name (`RBPOServiceEndpoint`), error codes.
+- `scripts/install_service.ps1` — Admin script: stop old service → delete → create → start.
 
-```text
-std::map<uint64_t, vector<AvRecord>>
-  ключ   — ObjectSignaturePrefix (первые 8 байт сигнатуры, little-endian uint64)
-  значение — массив записей AvRecord:
-    prefix        (8 байт)  — первые 8 байт сигнатуры
-    sigLen        (4 байта) — полная длина сигнатуры
-    sigHash              — SHA-256 всех байт сигнатуры (BCrypt)
-    offsetBegin   (8 байт) — начало допустимого диапазона позиции (-1 = любая)
-    offsetEnd     (8 байт) — конец допустимого диапазона позиции (-1 = любая)
-    type          (1 байт) — ObjectType: PE=0, Script=1
-    recordSig            — SHA-256 всех вышеперечисленных полей (ЭЦП)
+Service name on the system: **RBPOService**.  
+RPC transport: **ALPC** (`ncalrpc:`), endpoint name: **RBPOServiceEndpoint**.
+
+---
+
+## Task 3 — Authentication & licensing flow
+
+### Where credentials live
+
+- **GUI** never stores passwords. It sends them once over RPC to the service.
+- **Service** keeps `accessToken` and `refreshToken` **only in RAM** (`state.cpp`).
+- On service stop everything is wiped. On next start the user must log in again.
+- `productId` is persisted to the registry (under `HKLM`) so the license check worker knows which product to validate.
+
+### License check worker
+
+A background thread (`LicenseWorker`) wakes every 5 seconds and:
+1. Builds a JSON body with `{ deviceMac, productId }`.
+2. POSTs it to `/api/licenses/check` with the current `Bearer` token.
+3. If HTTP **200** → parses the signed ticket, stores expiry date, sets `licenseHeld = true`.
+4. If HTTP **404** → no license; if HTTP **403** → blocked by admin.
+5. If the ticket says `blocked=true` or the expiry date has passed, the GUI automatically switches back to the activation screen.
+
+### Known backend quirk we handled
+
+The backend returns `productId` as a **number** (`1`) inside the `ticket` object, while some implementations send it as a string. Our `ParseSignedTicket` falls back to numeric extraction and defaults to `"1"` if the field is missing entirely.
+
+---
+
+## Task 4 — Antivirus engine
+
+### In-memory signature database
+
+```
+std::map<uint64_t, std::vector<AvRecord>>
+  key   → first 8 bytes of the signature (little-endian uint64)
+  value → list of records sharing that prefix
 ```
 
-`std::map` реализован как красно-чёрное дерево → поиск по префиксу O(log K).
+Per-record fields:
+- `prefix`        — same 8-byte prefix as the map key.
+- `sigLen`        — total signature length in bytes.
+- `sigHash`       — SHA-256 of the *entire* signature bytes.
+- `offsetBegin`   — earliest allowed file offset for a match (`-1` = any).
+- `offsetEnd`     — latest allowed file offset for a match (`-1` = any).
+- `type`          — `0` = PE, `1` = Script.
+- `recordSig`     — SHA-256 over `prefix|sigLen|sigHash|offsetBegin|offsetEnd|type` (integrity check).
 
-### Алгоритм сканирования (обязательный, п.3)
+The `std::map` gives us **O(log K)** prefix lookup.
 
-1. Позиция чтения = 0.
-2. Считать 8 байт → поиск по ключу в `std::map` (O(log K)).
-3. Для каждой найденной записи (от дешёвой проверки к дорогой):
-   - 3.3.1 Тип объекта совпадает с `ObjectType`?
-   - 3.3.2 Позиция попадает в `[OffsetBegin, OffsetEnd]`?
-   - 3.3.3 Считать ещё `sigLen − 8` байт.
-   - 3.3.4 Вычислить SHA-256(prefix_bytes || extra_bytes).
-   - 3.3.5 Сравнить хэш с `ObjectSignature`.
-4. Несовпавшие записи исключаются; если список пуст — сдвиг на 1 байт, goto 2.
-5. Если осталась хоть одна запись — объект вредоносен.
+### Basic scan algorithm
 
-### Алгоритм Ахо-Корасика (необязательный, доп. баллы)
+1. Open the file, cursor = 0.
+2. Read 8 bytes, convert to `uint64_t` key.
+3. Look up the key in the map. If nothing found → shift cursor by 1 byte, repeat.
+4. For every candidate record with that prefix (cheapest tests first):
+   - Does the detected file type match `type`?
+   - Does cursor lie inside `[offsetBegin, offsetEnd]`?
+   - Read the remaining `sigLen - 8` bytes.
+   - Compute SHA-256 of `prefix_bytes + extra_bytes`.
+   - Compare with `sigHash`.
+5. Discard mismatches. If at least one record survives → **threat detected**.
 
-При загрузке базы (`AvLoad`) дополнительно строится автомат из реальных байтов всех сигнатур. `ScanStream` использует AC для одного прохода по файлу O(N + M) вместо O(N log K), проверяя type и offset при совпадении.
+### Aho-Corasick (optional fast path)
 
-### Определение типа файла
+During `AvLoad` we also build an AC automaton from the *real* signature bytes. `ScanStream` can then do a single pass over the file in **O(N + M)** instead of the sliding-window approach above. When the automaton reports a hit we still verify type and offset constraints.
 
-| Условие | Тип |
-| ------- | --- |
-| Расширение `.py`, `.ps1`, `.js`, `.vbs` | Script |
-| Первые байты `MZ` | PE |
-| Иначе | Script |
+### File type detection
 
-### Тестовые сигнатуры
+| Rule | Assigned type |
+|------|--------------|
+| Extension is `.py`, `.ps1`, `.js`, `.vbs` | Script |
+| First bytes are `MZ` | PE |
+| Anything else | Script |
 
-| Сигнатура (16 байт) | Тип | Детект |
-| ------------------- | --- | ------ |
-| `RBPOTESTVRS1.000` | PE | Файл содержит эту последовательность + MZ-заголовок |
-| `#RBPOTESTVRS2.00` | Script | Файл содержит эту последовательность + расширение .py/.ps1 |
+### Built-in test signatures
 
-### RPC-методы (зарегистрированы в `RBPOServiceRpc`)
+| 16-byte payload | Type | Trigger |
+|----------------|------|---------|
+| `RBPOTESTVRS1.000` | PE | File contains these bytes AND starts with `MZ` |
+| `#RBPOTESTVRS2.00` | Script | File contains these bytes AND has `.py`/`.ps1` extension |
 
-**Обязательные:**
+### RPC surface exposed by the service
 
-| Метод | Описание |
-| ----- | -------- |
-| `RBPO_GetAvDbInfo` | Дата выпуска базы + кол-во записей |
-| `RBPO_ScanFile` | Сканирование одного файла |
-| `RBPO_ScanDirectory` | Рекурсивное сканирование директории |
+Required:
+- `RBPO_GetAvDbInfo` — returns release date + record count.
+- `RBPO_ScanFile` — scan a single file path.
+- `RBPO_ScanDirectory` — recursive scan.
 
-**Необязательные:**
+Optional (extra credit):
+- `RBPO_ScanAllDrives` — all fixed drives.
+- `RBPO_SetScanSchedule` / `RBPO_ClearScanSchedule` / `RBPO_GetScheduleResults`
+- `RBPO_AddMonitorDirectory` / `RBPO_RemoveMonitorDirectory` / `RBPO_GetMonitorResults`
 
-| Метод | Описание |
-| ----- | -------- |
-| `RBPO_ScanAllDrives` | Сканирование всех несъёмных дисков (`DRIVE_FIXED`) |
-| `RBPO_SetScanSchedule` | Установить расписание (путь + интервал в секундах) |
-| `RBPO_ClearScanSchedule` | Сбросить расписание |
-| `RBPO_GetScheduleResults` | Результаты последнего планового сканирования + timestamp |
-| `RBPO_AddMonitorDirectory` | Начать мониторинг директории (`ReadDirectoryChangesW`) |
-| `RBPO_RemoveMonitorDirectory` | Остановить мониторинг |
-| `RBPO_GetMonitorResults` | Результаты мониторинга (файлы, обнаруженные при создании/изменении) |
-
-Сканирующие методы защищены `LicenseGate()` — требуют активной лицензии.
-
-### GUI (лицензионная панель)
-
-- Метка с датой базы и количеством записей.
-- Кнопки: «Скан файл», «Скан папку», «Скан все диски».
-- Секция расписания: поле пути, поле интервала (сек), «Установить» / «Сбросить» / «Результаты».
-- Секция мониторинга: поле пути, «Добавить» / «Удалить» / «Результаты».
+All scanning RPCs first call `LicenseGate()`. If the license is not active the call returns `RBPO_ERR_NO_LICENSE`.
 
 ---
 
-## Хранение и обновление AV-баз (zad-5)
+## Task 5 — Binary database format on disk
 
-### Бинарный формат на диске
+Four files live next to `rbpo-service.exe`:
 
-Два файла хранятся рядом с `rbpo-service.exe`:
+| File | Purpose |
+|------|---------|
+| `avdb.bin` | Active signature database |
+| `avdb.manifest` | HMAC-SHA256 manifest protecting `avdb.bin` |
+| `avdb.bin.bak` / `avdb.manifest.bak` | Backup created before every update |
+| `avdb.default.bin` / `avdb.default.manifest` | Hard-coded fallback database (2 test signatures) |
 
-| Файл | Назначение |
-| ---- | ---------- |
-| `avdb.bin` | Основная база (RBDB v1) |
-| `avdb.manifest` | Манифест с HMAC-SHA256 и хэшем файла |
-| `avdb.bin.bak` / `avdb.manifest.bak` | Резервная копия (создаётся перед обновлением) |
-| `avdb.default.bin` / `avdb.default.manifest` | База по умолчанию (генерируется при первом запуске) |
+### `avdb.bin` — RBDB v1 layout
 
-**Формат `avdb.bin` (RBDB v1):**
-
-```text
-[4]  magic 'R','B','D','B'
-[2]  version LE uint16 = 1
-[4]  record count LE uint32
-[2]  date UTF-8 length LE uint16
-[N]  date UTF-8
-[32] DataHash = SHA-256 всей секции записей
----- секция записей ----
-для каждой записи:
-  [8]  prefix LE uint64
-  [4]  sigLen LE uint32
-  [1]  sigHash length (0 или 32)
-  [N]  sigHash bytes
-  [8]  offsetBegin LE int64
-  [8]  offsetEnd   LE int64
-  [1]  type (0=PE, 1=Script)
-  [1]  hasRemainderHash
-  [4]  sigBytes length LE uint32
-  [N]  sigBytes
-  [2]  threatName UTF-8 length LE uint16
-  [N]  threatName UTF-8
-  [32] RecordSig = SHA-256(prefix||sigLen||sigHash||offsetBegin||offsetEnd||type)
+```
+[4]   magic      'R','B','D','B'
+[2]   version    LE uint16 = 1
+[4]   count      LE uint32 — number of records
+[2]   dateLen    LE uint16 — length of UTF-8 release date string
+[N]   date       UTF-8 release date
+[32]  dataHash   SHA-256 over the entire record section
+------ record section ------
+for each record:
+  [8]   prefix        LE uint64
+  [4]   sigLen        LE uint32
+  [1]   sigHashLen    0 or 32
+  [N]   sigHash       bytes (if len > 0)
+  [8]   offsetBegin   LE int64
+  [8]   offsetEnd     LE int64
+  [1]   type          0=PE, 1=Script
+  [1]   hasRemainderHash
+  [4]   sigBytesLen   LE uint32
+  [N]   sigBytes      raw signature bytes
+  [2]   nameLen       LE uint16
+  [N]   threatName    UTF-8
+  [32]  recordSig     SHA-256(prefix|sigLen|sigHash|offsetBegin|offsetEnd|type)
 ```
 
-**Формат `avdb.manifest` (RBMF v1):**
+### `avdb.manifest` — RBMF v1 layout
 
-```text
-[4]  magic 'R','B','M','F'
-[2]  version LE uint16 = 1
-[32] FileHash = SHA-256 содержимого avdb.bin
-[32] ManifestSig = HMAC-SHA256(key, magic||version||FileHash)
+```
+[4]   magic        'R','B','M','F'
+[2]   version      LE uint16 = 1
+[32]  fileHash     SHA-256(avdb.bin contents)
+[32]  manifestSig  HMAC-SHA256(key, magic|version|fileHash)
 ```
 
-### Логика загрузки при запуске
+### Startup load sequence
 
-```text
-1. Сгенерировать avdb.default.bin если отсутствует.
-2. Проверить HMAC-манифест avdb.manifest:
-   а. Успех → загрузить avdb.bin, проверить ЭЦП каждой записи,
-              невалидные пропустить.
-              Если пропущены записи + сеть доступна → принудительное обновление.
-   б. Неуспех + сеть + токен → принудительное обновление с backend.
-3. Если база не загружена → проверить avdb.manifest.bak → загрузить avdb.bin.bak.
-4. Если резервная копия недоступна → загрузить avdb.default.bin.
-```
+1. If `avdb.default.bin` is missing → generate it from the built-in test signatures.
+2. Try to verify `avdb.manifest`:
+   - Valid → load `avdb.bin`, validate each record signature.
+   - If some records are invalid and network is up → force an update from backend.
+   - Invalid manifest + network + valid token → force an update.
+3. If step 2 fails → try loading `avdb.bin.bak` (backup).
+4. If backup also fails → fall back to `avdb.default.bin`.
 
-### Периодическое обновление
+### Automatic update loop
 
-- Фоновый поток стартует при запуске службы (`AvDbStartUpdate(3600)`).
-- Каждые 3600 с (при наличии access token):
-  1. Сохранить текущую базу в `avdb.bin.bak` / `avdb.manifest.bak`.
-  2. Загрузить свежие записи с `GET /api/signatures`.
-  3. Записать `avdb.bin` + `avdb.manifest`.
-  4. При ошибке записи — откатить базу из резервной копии.
+`AvDbStartUpdate(3600)` launches a thread that sleeps 3600 seconds between cycles:
+1. Copy current `avdb.bin` → `avdb.bin.bak` and `avdb.manifest` → `avdb.manifest.bak`.
+2. Download fresh signatures via `GET /api/signatures`.
+3. Serialize new `avdb.bin` + `avdb.manifest`.
+4. If write fails → restore from `.bak`.
 
 ---
 
-## Связь с бэкендом
+## Backend endpoints used
 
-Порт по умолчанию **8081** (HTTP). Переопределение: env-переменные `RBPO_BACKEND_HOST`, `RBPO_BACKEND_PORT`, `RBPO_BACKEND_USE_TLS`.
+All calls go to port **8081** (HTTP by default). Override via environment variables:
+- `RBPO_BACKEND_HOST`
+- `RBPO_BACKEND_PORT`
+- `RBPO_BACKEND_USE_TLS`
 
-| Endpoint | Назначение |
-| -------- | ---------- |
-| `POST /api/auth/login` | Логин (тело: `username` / `password`) |
-| `POST /api/auth/refresh` | Обновление JWT |
-| `GET /api/auth/me` | Профиль пользователя |
-| `POST /api/licenses/activate` | Активация ключа |
-| `POST /api/licenses/check` | Проверка лицензии |
+| Method | Path | Body highlights |
+|--------|------|----------------|
+| POST | `/api/auth/login` | `{ username, password }` |
+| POST | `/api/auth/refresh` | `{ refreshToken }` |
+| GET  | `/api/auth/me` | — |
+| POST | `/api/licenses/activate` | `{ activationKey, deviceMac, deviceName }` |
+| POST | `/api/licenses/check` | `{ deviceMac, productId }` |
+| GET  | `/api/signatures` | Full signature database (for updates) |
 
 ---
 
-## Сборка (Windows)
+## Building on Windows
 
-```bat
+Prerequisites: Visual Studio 2022, Qt6, CMake.
+
+```powershell
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-Артефакты: `build/Release/rbpo-app.exe`, `build/Release/rbpo-service.exe`. Оба exe должны лежать в **одном каталоге**.
+Outputs:
+- `build/Release/rbpo-app.exe`
+- `build/Release/rbpo-service.exe`
 
-### Установка службы
+Both must reside in the **same directory** at runtime.
+
+### Manual service registration
 
 ```bat
 sc create RBPOService binPath= "C:\path\to\rbpo-service.exe" start= demand DisplayName= "RBPO Service"
 sc start RBPOService
 ```
 
-### Удаление службы
+### Manual removal
 
 ```bat
 sc stop RBPOService
 sc delete RBPOService
 ```
 
-### Установка через скрипт
+### Scripted install (recommended)
+
+Run **as Administrator**:
 
 ```powershell
-# От имени администратора:
 powershell -ExecutionPolicy Bypass -File scripts\install_service.ps1
 ```
 
-Скрипт остановит/удалит старую службу, зарегистрирует заново и запустит.
+The script stops/deletes any old service instance, re-creates it, and starts it.
+
+---
+
+## Demo guide
+
+See `DEMO_GUIDE.md` for a step-by-step walkthrough with exact Postman requests and expected GUI behaviour for each task.
