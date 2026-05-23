@@ -33,6 +33,7 @@
 #include <QFileDialog>
 #include <QEvent>
 #include <QIcon>
+#include <QStyle>
 
 // RPC
 #include "rbpo_rpc_h.h"
